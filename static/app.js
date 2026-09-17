@@ -736,16 +736,178 @@ function bindChallenge() {
     syncEditorScroll(editor, lines, highlight);
   });
   editor.addEventListener("keydown", (event) => {
-    if (event.key !== "Tab") return;
-    event.preventDefault();
-    const start = editor.selectionStart;
-    const end = editor.selectionEnd;
-    const spaces = "    ";
-    editor.setRangeText(spaces, start, end, "end");
-    state.code = editor.value;
-    updateEditorDecorations(editor, lines, highlight);
-    scheduleSave();
+    if (isCommentShortcut(event)) {
+      event.preventDefault();
+      toggleLineComments(editor, lines, highlight);
+      return;
+    }
+    if (isLineCutShortcut(event) && editor.selectionStart === editor.selectionEnd) {
+      event.preventDefault();
+      removeCurrentLine(editor, lines, highlight);
+      return;
+    }
+    if (event.key === "Tab") {
+      event.preventDefault();
+      const start = editor.selectionStart;
+      const end = editor.selectionEnd;
+      const spaces = "    ";
+      editor.setRangeText(spaces, start, end, "end");
+      applyEditorChange(editor, lines, highlight);
+    }
   });
+}
+
+function isEditorModifier(event) {
+  return event.metaKey || event.ctrlKey;
+}
+
+function isCommentShortcut(event) {
+  return (
+    isEditorModifier(event) &&
+    !event.altKey &&
+    !event.shiftKey &&
+    (event.key === "/" || event.code === "Slash")
+  );
+}
+
+function isLineCutShortcut(event) {
+  return isEditorModifier(event) && !event.altKey && !event.shiftKey && event.key.toLowerCase() === "x";
+}
+
+function applyEditorChange(editor, lines, highlight) {
+  state.code = editor.value;
+  updateEditorDecorations(editor, lines, highlight);
+  scheduleSave();
+}
+
+function selectedLineBounds(text, selectionStart, selectionEnd) {
+  const start = text.lastIndexOf("\n", selectionStart - 1) + 1;
+  let effectiveEnd = selectionEnd;
+  if (selectionEnd > selectionStart && text[selectionEnd - 1] === "\n") {
+    effectiveEnd -= 1;
+  }
+  const nextLineBreak = text.indexOf("\n", effectiveEnd);
+  const end = nextLineBreak === -1 ? text.length : nextLineBreak;
+  return { start, end };
+}
+
+function toggleLineComments(editor, lines, highlight) {
+  const text = editor.value;
+  const selectionStart = editor.selectionStart;
+  const selectionEnd = editor.selectionEnd;
+  const hasSelection = selectionStart !== selectionEnd;
+  const bounds = selectedLineBounds(text, selectionStart, selectionEnd);
+  const block = text.slice(bounds.start, bounds.end);
+  const originalLines = block.split("\n");
+  const nonBlankLines = originalLines.filter((line) => line.trim().length > 0);
+  const shouldUncomment =
+    nonBlankLines.length > 0 && nonBlankLines.every((line) => /^\s*# ?/.test(line));
+  const transforms = originalLines.map((line) => transformCommentLine(line, shouldUncomment));
+  const replacement = transforms.map((item) => item.changed).join("\n");
+
+  editor.value = `${text.slice(0, bounds.start)}${replacement}${text.slice(bounds.end)}`;
+
+  if (hasSelection) {
+    editor.setSelectionRange(bounds.start, bounds.start + replacement.length);
+  } else {
+    const offset = selectionStart - bounds.start;
+    const nextOffset = mapLineTransformOffset(transforms, offset);
+    const nextSelection = bounds.start + nextOffset;
+    editor.setSelectionRange(nextSelection, nextSelection);
+  }
+
+  applyEditorChange(editor, lines, highlight);
+}
+
+function transformCommentLine(line, shouldUncomment) {
+  if (shouldUncomment) {
+    const match = line.match(/^(\s*)# ?/);
+    if (!match) {
+      return {
+        changed: line,
+        column: 0,
+        delta: 0,
+        removeLength: 0,
+        originalLength: line.length,
+      };
+    }
+    const column = match[1].length;
+    const removeLength = match[0].length - column;
+    return {
+      changed: `${line.slice(0, column)}${line.slice(column + removeLength)}`,
+      column,
+      delta: -removeLength,
+      removeLength,
+      originalLength: line.length,
+    };
+  }
+
+  const indent = line.match(/^\s*/)[0];
+  const column = indent.length;
+  return {
+    changed: `${line.slice(0, column)}# ${line.slice(column)}`,
+    column,
+    delta: 2,
+    removeLength: 0,
+    originalLength: line.length,
+  };
+}
+
+function mapLineTransformOffset(transforms, offset) {
+  let originalCursor = 0;
+  let nextCursor = 0;
+
+  for (const transform of transforms) {
+    const lineEnd = originalCursor + transform.originalLength;
+    if (offset <= lineEnd) {
+      return nextCursor + mapSingleLineOffset(transform, offset - originalCursor);
+    }
+    originalCursor = lineEnd + 1;
+    nextCursor += transform.changed.length + 1;
+  }
+
+  return nextCursor;
+}
+
+function mapSingleLineOffset(transform, offset) {
+  if (transform.delta > 0) {
+    return offset >= transform.column ? offset + transform.delta : offset;
+  }
+  if (transform.delta < 0) {
+    const removeEnd = transform.column + transform.removeLength;
+    if (offset <= transform.column) return offset;
+    if (offset <= removeEnd) return transform.column;
+    return offset + transform.delta;
+  }
+  return offset;
+}
+
+function removeCurrentLine(editor, lines, highlight) {
+  const text = editor.value;
+  const cursor = editor.selectionStart;
+  const lineStart = text.lastIndexOf("\n", cursor - 1) + 1;
+  const lineBreak = text.indexOf("\n", cursor);
+  let removeStart = lineStart;
+  let removeEnd = text.length;
+  let nextCursor = lineStart;
+
+  if (lineBreak !== -1) {
+    removeEnd = lineBreak + 1;
+  } else if (lineStart > 0) {
+    removeStart = lineStart - 1;
+    nextCursor = removeStart;
+  }
+
+  const removed = text.slice(removeStart, removeEnd);
+  editor.value = `${text.slice(0, removeStart)}${text.slice(removeEnd)}`;
+  editor.setSelectionRange(nextCursor, nextCursor);
+  writeClipboard(removed);
+  applyEditorChange(editor, lines, highlight);
+}
+
+function writeClipboard(text) {
+  if (!text || typeof navigator === "undefined" || !navigator.clipboard?.writeText) return;
+  navigator.clipboard.writeText(text).catch(() => {});
 }
 
 function bindConsoleResizer() {
