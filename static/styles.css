@@ -426,8 +426,8 @@ button:disabled {
 .workspace {
   height: calc(100vh - 64px);
   display: grid;
-  grid-template-columns: minmax(380px, 49.5%) minmax(520px, 1fr);
-  gap: 6px;
+  grid-template-columns: minmax(320px, var(--problem-pane-width, 50%)) 8px minmax(0, 1fr);
+  gap: 0;
   padding: 0 10px 10px;
 }
 
@@ -530,6 +530,35 @@ button:disabled {
 
 .problem-content svg {
   max-width: 100%;
+}
+
+.pane-resizer {
+  min-width: 8px;
+  cursor: col-resize;
+  display: grid;
+  place-items: center;
+  background: #101215;
+  border-top: 1px solid var(--line-soft);
+  border-bottom: 1px solid var(--line-soft);
+  touch-action: none;
+}
+
+.pane-resizer span {
+  width: 2px;
+  height: 54px;
+  border-radius: 999px;
+  background: #343c46;
+}
+
+.pane-resizer:hover span,
+.pane-resizer:active span,
+body.pane-resizing .pane-resizer span {
+  background: var(--cyan);
+}
+
+body.pane-resizing {
+  cursor: col-resize;
+  user-select: none;
 }
 
 .right-pane {
@@ -836,6 +865,11 @@ button:disabled {
     height: auto;
     min-height: calc(100vh - 64px);
     grid-template-columns: 1fr;
+    gap: 6px;
+  }
+
+  .pane-resizer {
+    display: none;
   }
 
   .left-pane {

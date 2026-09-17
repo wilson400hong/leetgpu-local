@@ -20,7 +20,19 @@ const state = {
     520,
     Math.max(120, Number(localStorage.getItem("leetgpu.consoleHeight") || 190) || 190),
   ),
+  problemPaneWidthPct: boundedNumber(
+    localStorage.getItem("leetgpu.problemPaneWidthPct"),
+    50,
+    24,
+    76,
+  ),
 };
+
+function boundedNumber(value, fallback, min, max) {
+  const number = Number(value);
+  const safe = Number.isFinite(number) ? number : fallback;
+  return Math.min(max, Math.max(min, safe));
+}
 
 async function api(path, options = {}) {
   const response = await fetch(path, {
@@ -476,7 +488,7 @@ function renderChallenge() {
   const item = state.current;
   if (!item) return renderHome();
   renderShell(`
-    <main class="workspace">
+    <main class="workspace" style="--problem-pane-width: ${state.problemPaneWidthPct}%">
       <aside class="left-pane">
         <div class="challenge-title-row">
           <button class="back-button" data-home aria-label="Back to challenges">&lt;</button>
@@ -494,6 +506,9 @@ function renderChallenge() {
           ${state.detailTab === "submissions" ? renderDetailSubmissions(item) : renderProblem(item)}
         </div>
       </aside>
+      <div class="pane-resizer" data-pane-resizer role="separator" aria-orientation="vertical" aria-label="Resize problem and IDE panes" title="Drag to resize panes">
+        <span></span>
+      </div>
       <section class="right-pane" style="--console-height: ${state.consoleHeight}px">
         <div class="editor-bar">
           <div class="file-name">solution.py <span class="public-chip">Local</span></div>
@@ -723,6 +738,7 @@ function bindChallenge() {
   const editor = document.getElementById("codeEditor");
   const lines = document.getElementById("lineNumbers");
   const highlight = document.getElementById("codeHighlight");
+  bindPaneResizer();
   bindConsoleResizer();
   if (!editor || !lines || !highlight) return;
   editor.value = state.code;
@@ -908,6 +924,64 @@ function removeCurrentLine(editor, lines, highlight) {
 function writeClipboard(text) {
   if (!text || typeof navigator === "undefined" || !navigator.clipboard?.writeText) return;
   navigator.clipboard.writeText(text).catch(() => {});
+}
+
+function bindPaneResizer() {
+  const handle = document.querySelector("[data-pane-resizer]");
+  const workspace = document.querySelector(".workspace");
+  if (!handle || !workspace) return;
+
+  handle.addEventListener("pointerdown", (event) => {
+    event.preventDefault();
+    handle.setPointerCapture(event.pointerId);
+    document.body.classList.add("pane-resizing");
+
+    const workspaceRect = workspace.getBoundingClientRect();
+    const workspaceStyle = window.getComputedStyle(workspace);
+    const paddingLeft = Number.parseFloat(workspaceStyle.paddingLeft) || 0;
+    const paddingRight = Number.parseFloat(workspaceStyle.paddingRight) || 0;
+    const contentLeft = workspaceRect.left + paddingLeft;
+    const contentWidth = workspaceRect.width - paddingLeft - paddingRight;
+    const handleWidth = handle.getBoundingClientRect().width;
+    const minProblemWidth = Math.min(320, contentWidth * 0.45);
+    const minIdeWidth = Math.min(420, contentWidth * 0.45);
+    const maxProblemWidth = Math.max(
+      minProblemWidth,
+      contentWidth - minIdeWidth - handleWidth,
+    );
+
+    const applyWidth = (clientX) => {
+      if (contentWidth <= 0) return;
+      const nextWidth = boundedNumber(
+        clientX - contentLeft,
+        minProblemWidth,
+        minProblemWidth,
+        maxProblemWidth,
+      );
+      const nextPct = Math.round((nextWidth / contentWidth) * 1000) / 10;
+      state.problemPaneWidthPct = nextPct;
+      workspace.style.setProperty("--problem-pane-width", `${nextPct}%`);
+      localStorage.setItem("leetgpu.problemPaneWidthPct", String(nextPct));
+    };
+
+    const onMove = (moveEvent) => {
+      applyWidth(moveEvent.clientX);
+    };
+
+    const onUp = () => {
+      document.body.classList.remove("pane-resizing");
+      if (handle.hasPointerCapture(event.pointerId)) {
+        handle.releasePointerCapture(event.pointerId);
+      }
+      handle.removeEventListener("pointermove", onMove);
+      handle.removeEventListener("pointerup", onUp);
+      handle.removeEventListener("pointercancel", onUp);
+    };
+
+    handle.addEventListener("pointermove", onMove);
+    handle.addEventListener("pointerup", onUp);
+    handle.addEventListener("pointercancel", onUp);
+  });
 }
 
 function bindConsoleResizer() {
