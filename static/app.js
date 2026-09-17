@@ -445,16 +445,19 @@ function challengeCards(items) {
   }
   return items
     .map(
-      (item) => `
-        <article class="challenge-card" data-challenge-id="${escapeHtml(item.id)}" tabindex="0">
+      (item) => {
+        const href = `#/challenge/${encodeURIComponent(item.id)}`;
+        return `
+        <a class="challenge-card" data-challenge-id="${escapeHtml(item.id)}" href="${escapeHtml(href)}">
           <div class="card-meta">
             <span class="difficulty ${item.difficulty}">${escapeHtml(capitalize(item.difficulty))}</span>
             <span class="status-pill ${item.status}">${statusLabel(item.status)}</span>
           </div>
           <h2>${escapeHtml(item.title)}</h2>
           <p>${escapeHtml(truncate(item.description, 145))}</p>
-        </article>
-      `,
+        </a>
+      `;
+      },
     )
     .join("");
 }
@@ -701,14 +704,10 @@ function bindHome() {
 
 function bindChallengeCards() {
   document.querySelectorAll("[data-challenge-id]").forEach((card) => {
-    const open = () => {
-      window.location.hash = `#/challenge/${encodeURIComponent(card.dataset.challengeId)}`;
-    };
-    card.addEventListener("click", open);
     card.addEventListener("keydown", (event) => {
-      if (event.key === "Enter" || event.key === " ") {
+      if (event.key === " ") {
         event.preventDefault();
-        open();
+        window.location.href = card.href;
       }
     });
   });
