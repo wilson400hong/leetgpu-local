@@ -1,0 +1,12 @@
+{
+  "storage_dir": "~/.local/share/leetgpu-local",
+  "challenges_dir": "leetgpu-challenges",
+  "judge_python": "",
+  "host": "127.0.0.1",
+  "port": 8000,
+  "run_timeout_seconds": 20,
+  "submit_timeout_seconds": 90,
+  "max_test_bytes": 1073741824,
+  "memory_mb": 0,
+  "cpu_seconds": 0
+}

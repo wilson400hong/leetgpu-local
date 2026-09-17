@@ -1,0 +1,3 @@
+[submodule "leetgpu-challenges"]
+	path = leetgpu-challenges
+	url = https://github.com/AlphaGPU/leetgpu-challenges.git
