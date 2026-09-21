@@ -327,6 +327,12 @@ def logical_2d_shape_for_output(case: dict[str, Any], output_key: str, torch) ->
     if not isinstance(output, torch.Tensor) or output.dim() != 1:
         return None
 
+    matrix_rows = case.get("M")
+    matrix_cols = case.get("N")
+    if isinstance(matrix_rows, int) and isinstance(matrix_cols, int):
+        if matrix_rows > 0 and matrix_cols > 0 and output.numel() == matrix_rows * matrix_cols:
+            return matrix_rows, matrix_cols
+
     input_rows = case.get("input_rows")
     input_cols = case.get("input_cols")
     if not isinstance(input_rows, int) or not isinstance(input_cols, int):
@@ -378,6 +384,23 @@ def solution_exception_hint(
                     f"or {key}.copy_(value.reshape_as({key}))."
                 )
                 break
+
+    unsupported_int_matmul = (
+        "not implemented" in lower_message
+        and (
+            "addmm_cuda" in lower_message
+            or "mm_cuda" in lower_message
+            or "bmm_cuda" in lower_message
+        )
+        and ("'int'" in lower_message or "torch.int32" in lower_message)
+    )
+    if unsupported_int_matmul:
+        hints.append(
+            "PyTorch CUDA does not implement int32 matrix multiplication for @/torch.matmul. "
+            "Use a supported PyTorch formulation such as "
+            "(A[:, :, None] * B[None, :, :]).sum(dim=1), or cast to float32 if that is acceptable "
+            "for the challenge."
+        )
 
     return "\n".join(hints)
 

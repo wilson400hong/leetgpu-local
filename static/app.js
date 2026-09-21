@@ -16,6 +16,7 @@ const state = {
   globalSubmissions: [],
   saveTimer: null,
   completion: null,
+  bracketHoverIndex: null,
   device: "auto",
   consoleHeight: Math.min(
     520,
@@ -120,6 +121,11 @@ const PYTHON_BUILTINS = new Set([
   "tuple",
 ]);
 const PYTHON_MODULES = new Set(["ctypes", "math", "nn", "np", "numpy", "torch"]);
+const BRACKET_PAIRS = { "(": ")", "[": "]", "{": "}" };
+const BRACKET_OPENERS = new Set(Object.keys(BRACKET_PAIRS));
+const BRACKET_CLOSERS = new Set(Object.values(BRACKET_PAIRS));
+const BRACKET_CHARS = new Set([...BRACKET_OPENERS, ...BRACKET_CLOSERS]);
+const BRACKET_COLOR_COUNT = 6;
 const MAX_COMPLETION_ITEMS = 9;
 const TORCH_COMPLETIONS = [
   ["abs", "absolute value"],
@@ -192,7 +198,17 @@ function tokenSpan(className, value) {
   return `<span class="${className}">${escapeHtml(value)}</span>`;
 }
 
-function highlightPython(code) {
+function bracketSpan(value, info) {
+  const classes = [
+    "tok-bracket",
+    `bracket-depth-${Math.abs(info.depth) % BRACKET_COLOR_COUNT}`,
+  ];
+  if (!info.matched) classes.push("bracket-unmatched");
+  if (info.active) classes.push("bracket-active");
+  return tokenSpan(classes.join(" "), value);
+}
+
+function highlightPython(code, bracketInfo = new Map()) {
   let output = "";
   let index = 0;
   let expectDeclaration = false;
@@ -254,11 +270,74 @@ function highlightPython(code) {
       continue;
     }
 
-    output += escapeHtml(char);
+    const bracket = bracketInfo.get(index);
+    output += bracket ? bracketSpan(char, bracket) : escapeHtml(char);
     index += 1;
   }
 
   return output || " ";
+}
+
+function analyzePythonBrackets(code, activeIndex) {
+  const stack = [];
+  const pairs = [];
+  const unmatched = [];
+  let index = 0;
+
+  while (index < code.length) {
+    const char = code[index];
+
+    if (char === "#") {
+      const end = code.indexOf("\n", index);
+      index = end === -1 ? code.length : end;
+      continue;
+    }
+
+    if (char === '"' || char === "'") {
+      index = readPythonString(code, index).end;
+      continue;
+    }
+
+    if (BRACKET_OPENERS.has(char)) {
+      stack.push({ char, index, depth: stack.length });
+      index += 1;
+      continue;
+    }
+
+    if (BRACKET_CLOSERS.has(char)) {
+      const opener = stack[stack.length - 1];
+      if (opener && BRACKET_PAIRS[opener.char] === char) {
+        stack.pop();
+        pairs.push({ open: opener.index, close: index, depth: opener.depth });
+      } else {
+        unmatched.push({ index, depth: stack.length });
+      }
+      index += 1;
+      continue;
+    }
+
+    index += 1;
+  }
+
+  stack.forEach((opener) => unmatched.push({ index: opener.index, depth: opener.depth }));
+
+  const activePair =
+    activeIndex == null
+      ? null
+      : pairs.find((pair) => pair.open === activeIndex || pair.close === activeIndex);
+  const info = new Map();
+
+  pairs.forEach((pair) => {
+    const active = activePair === pair;
+    const value = { depth: pair.depth, matched: true, active };
+    info.set(pair.open, value);
+    info.set(pair.close, value);
+  });
+  unmatched.forEach((item) => {
+    info.set(item.index, { depth: item.depth, matched: false, active: item.index === activeIndex });
+  });
+
+  return info;
 }
 
 function readPythonString(code, start) {
@@ -352,6 +431,7 @@ async function loadChallenge(id) {
     state.current = await api(`/api/challenge?id=${encodeURIComponent(id)}`);
     state.code = state.current.code || state.current.starter || "";
     state.lastResult = null;
+    state.bracketHoverIndex = null;
     renderChallenge();
   } catch (error) {
     renderError(error.message);
@@ -843,13 +923,31 @@ function bindChallenge() {
     positionCompletionMenu(editor, completionMenu);
   });
   editor.addEventListener("click", () => {
+    updateEditorDecorations(editor, lines, highlight);
     updateCompletionMenu(editor, completionMenu);
   });
   editor.addEventListener("keyup", (event) => {
+    updateEditorDecorations(editor, lines, highlight);
     if (["ArrowUp", "ArrowDown", "Enter", "Escape", "Tab"].includes(event.key)) return;
     updateCompletionMenu(editor, completionMenu);
   });
+  editor.addEventListener("select", () => {
+    updateEditorDecorations(editor, lines, highlight);
+  });
+  editor.addEventListener("mousemove", (event) => {
+    const hoverIndex = bracketIndexFromEditorPoint(editor, event.clientX, event.clientY);
+    if (hoverIndex === state.bracketHoverIndex) return;
+    state.bracketHoverIndex = hoverIndex;
+    updateEditorDecorations(editor, lines, highlight);
+  });
+  editor.addEventListener("mouseleave", () => {
+    if (state.bracketHoverIndex == null) return;
+    state.bracketHoverIndex = null;
+    updateEditorDecorations(editor, lines, highlight);
+  });
   editor.addEventListener("blur", () => {
+    state.bracketHoverIndex = null;
+    updateEditorDecorations(editor, lines, highlight);
     window.setTimeout(() => closeCompletionMenu(completionMenu), 120);
   });
   editor.addEventListener("keydown", (event) => {
@@ -1102,6 +1200,59 @@ function editorCharWidth(editor) {
   return context.measureText("M").width || 8;
 }
 
+function activeBracketIndex(editor) {
+  if (Number.isInteger(state.bracketHoverIndex) && BRACKET_CHARS.has(editor.value[state.bracketHoverIndex])) {
+    return state.bracketHoverIndex;
+  }
+
+  if (editor.selectionStart !== editor.selectionEnd) return null;
+  const cursor = editor.selectionStart;
+  if (BRACKET_CHARS.has(editor.value[cursor])) return cursor;
+  if (cursor > 0 && BRACKET_CHARS.has(editor.value[cursor - 1])) return cursor - 1;
+  return null;
+}
+
+function bracketIndexFromEditorPoint(editor, clientX, clientY) {
+  const index = editorIndexFromPoint(editor, clientX, clientY);
+  if (index == null) return null;
+  return BRACKET_CHARS.has(editor.value[index]) ? index : null;
+}
+
+function editorIndexFromPoint(editor, clientX, clientY) {
+  const rect = editor.getBoundingClientRect();
+  const style = window.getComputedStyle(editor);
+  const paddingLeft = Number.parseFloat(style.paddingLeft) || 0;
+  const paddingTop = Number.parseFloat(style.paddingTop) || 0;
+  const lineHeight = Number.parseFloat(style.lineHeight) || 21;
+  const charWidth = editorCharWidth(editor);
+  const tabSize = Number.parseInt(style.tabSize, 10) || 4;
+  const x = clientX - rect.left - paddingLeft + editor.scrollLeft;
+  const y = clientY - rect.top - paddingTop + editor.scrollTop;
+  if (x < 0 || y < 0) return null;
+
+  const lineIndex = Math.floor(y / lineHeight);
+  const targetColumn = Math.floor(x / charWidth);
+  const lines = editor.value.split("\n");
+  if (lineIndex < 0 || lineIndex >= lines.length) return null;
+
+  let lineStart = 0;
+  for (let index = 0; index < lineIndex; index += 1) {
+    lineStart += lines[index].length + 1;
+  }
+
+  return lineStart + lineIndexFromVisualColumn(lines[lineIndex], targetColumn, tabSize);
+}
+
+function lineIndexFromVisualColumn(line, targetColumn, tabSize) {
+  let column = 0;
+  for (let index = 0; index < line.length; index += 1) {
+    const width = line[index] === "\t" ? tabSize - (column % tabSize) : 1;
+    if (targetColumn < column + width) return index;
+    column += width;
+  }
+  return line.length;
+}
+
 function applyEditorChange(editor, lines, highlight) {
   state.code = editor.value;
   updateEditorDecorations(editor, lines, highlight);
@@ -1336,7 +1487,10 @@ function updateEditorDecorations(editor, lines, highlight) {
     text += `${index}\n`;
   }
   lines.textContent = text;
-  highlight.innerHTML = highlightPython(editor.value);
+  highlight.innerHTML = highlightPython(
+    editor.value,
+    analyzePythonBrackets(editor.value, activeBracketIndex(editor)),
+  );
   syncEditorScroll(editor, lines, highlight);
 }
 
