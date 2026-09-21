@@ -251,6 +251,7 @@ function consoleStatusClass(status) {
 }
 
 function route() {
+  closeNextChallengePrompt();
   const hash = window.location.hash || "#/";
   const match = hash.match(/^#\/challenge\/(.+)$/);
   if (match) {
@@ -458,7 +459,7 @@ function challengeCards(items) {
   return items
     .map(
       (item) => {
-        const href = `#/challenge/${encodeURIComponent(item.id)}`;
+        const href = challengeHref(item.id);
         return `
         <a class="challenge-card" data-challenge-id="${escapeHtml(item.id)}" href="${escapeHtml(href)}">
           <div class="card-meta">
@@ -472,6 +473,23 @@ function challengeCards(items) {
       },
     )
     .join("");
+}
+
+function challengeHref(id) {
+  return `#/challenge/${encodeURIComponent(id)}`;
+}
+
+function nextUnsolvedChallenge(currentId) {
+  if (!state.challenges.length) return null;
+  const currentIndex = state.challenges.findIndex((item) => item.id === currentId);
+  const startIndex = currentIndex === -1 ? 0 : currentIndex + 1;
+
+  for (let offset = 0; offset < state.challenges.length; offset += 1) {
+    const item = state.challenges[(startIndex + offset) % state.challenges.length];
+    if (item.id !== currentId && item.status !== "solved") return item;
+  }
+
+  return null;
 }
 
 function capitalize(value) {
@@ -1059,6 +1077,8 @@ async function judge(action) {
   const editor = document.getElementById("codeEditor");
   if (editor) state.code = editor.value;
   const selectedDevice = document.querySelector("[data-device]")?.value || state.device || "auto";
+  const submittedChallengeId = state.current.id;
+  let rendered = false;
   state.device = selectedDevice;
   state.running = true;
   renderChallenge();
@@ -1074,8 +1094,18 @@ async function judge(action) {
     });
     state.lastResult = result;
     await loadChallenges();
-    state.current = await api(`/api/challenge?id=${encodeURIComponent(state.current.id)}`);
+    const nextChallenge =
+      action === "submit" && result.status === "passed"
+        ? nextUnsolvedChallenge(submittedChallengeId)
+        : null;
+    state.current = await api(`/api/challenge?id=${encodeURIComponent(submittedChallengeId)}`);
     state.current.code = state.code;
+    state.running = false;
+    renderChallenge();
+    rendered = true;
+    if (action === "submit" && result.status === "passed") {
+      promptNextUnsolved(nextChallenge);
+    }
   } catch (error) {
     state.lastResult = {
       success: false,
@@ -1086,9 +1116,69 @@ async function judge(action) {
       durationMs: 0,
     };
   } finally {
-    state.running = false;
-    renderChallenge();
+    if (!rendered) {
+      state.running = false;
+      renderChallenge();
+    }
   }
+}
+
+function promptNextUnsolved(nextChallenge) {
+  closeNextChallengePrompt();
+  if (!nextChallenge) {
+    showNextChallengePrompt({
+      title: "Submission Passed",
+      message: "No unsolved challenges remain.",
+      primaryLabel: "OK",
+      onPrimary: closeNextChallengePrompt,
+    });
+    return;
+  }
+
+  showNextChallengePrompt({
+    title: "Submission Passed",
+    message: `Go to the next unsolved challenge?\n${nextChallenge.title}`,
+    primaryLabel: "Yes",
+    secondaryLabel: "No",
+    onPrimary: () => {
+      closeNextChallengePrompt();
+      state.detailTab = "problem";
+      window.location.hash = challengeHref(nextChallenge.id);
+    },
+  });
+}
+
+function showNextChallengePrompt({ title, message, primaryLabel, secondaryLabel = "", onPrimary }) {
+  const modal = document.createElement("div");
+  modal.className = "modal-backdrop";
+  modal.dataset.nextChallengeModal = "true";
+  modal.innerHTML = `
+    <section class="modal-dialog" role="dialog" aria-modal="true" aria-labelledby="nextChallengeTitle">
+      <h2 id="nextChallengeTitle">${escapeHtml(title)}</h2>
+      <p>${escapeHtml(message)}</p>
+      <div class="modal-actions">
+        ${secondaryLabel ? `<button class="ghost-button" data-modal-close>${escapeHtml(secondaryLabel)}</button>` : ""}
+        <button class="primary-button green" data-modal-primary>${escapeHtml(primaryLabel)}</button>
+      </div>
+    </section>
+  `;
+  document.body.appendChild(modal);
+
+  const primaryButton = modal.querySelector("[data-modal-primary]");
+  const closeButton = modal.querySelector("[data-modal-close]");
+  primaryButton?.addEventListener("click", onPrimary);
+  closeButton?.addEventListener("click", closeNextChallengePrompt);
+  modal.addEventListener("click", (event) => {
+    if (event.target === modal) closeNextChallengePrompt();
+  });
+  modal.addEventListener("keydown", (event) => {
+    if (event.key === "Escape") closeNextChallengePrompt();
+  });
+  primaryButton?.focus();
+}
+
+function closeNextChallengePrompt() {
+  document.querySelector("[data-next-challenge-modal]")?.remove();
 }
 
 async function refreshData() {

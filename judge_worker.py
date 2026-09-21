@@ -295,7 +295,9 @@ def summarize_case(case: dict[str, Any], signature: dict[str, Any], torch) -> li
 def compare_tensors(actual, expected, atol: float, rtol: float, torch) -> tuple[bool, str]:
     if not isinstance(actual, torch.Tensor):
         return False, f"actual value is {type(actual).__name__}, expected a tensor"
-    if tuple(actual.shape) != tuple(expected.shape):
+    same_shape = tuple(actual.shape) == tuple(expected.shape)
+    singleton_shape_compatible = actual.numel() == expected.numel() == 1
+    if not same_shape and not singleton_shape_compatible:
         return False, f"shape mismatch: got {tuple(actual.shape)}, expected {tuple(expected.shape)}"
 
     if actual.dtype != expected.dtype:
@@ -305,6 +307,9 @@ def compare_tensors(actual, expected, atol: float, rtol: float, torch) -> tuple[
             return False, f"dtype mismatch: got {actual.dtype}, expected {expected.dtype}"
     else:
         actual_for_compare = actual
+
+    if not same_shape:
+        actual_for_compare = actual_for_compare.reshape(expected.shape)
 
     if expected.dtype.is_floating_point or expected.dtype.is_complex:
         close = torch.isclose(actual_for_compare, expected, rtol=rtol, atol=atol, equal_nan=True)
@@ -329,6 +334,23 @@ def compare_tensors(actual, expected, atol: float, rtol: float, torch) -> tuple[
     actual_value = actual_for_compare.detach().reshape(-1)[index].cpu().item()
     expected_value = expected.detach().reshape(-1)[index].cpu().item()
     return False, f"mismatch at flat index {index}: got {actual_value}, expected {expected_value}"
+
+
+def tensor_unchanged(actual, original, torch) -> bool:
+    if not isinstance(actual, torch.Tensor) or not isinstance(original, torch.Tensor):
+        return False
+    if tuple(actual.shape) != tuple(original.shape) or actual.dtype != original.dtype:
+        return False
+    return bool(torch.equal(actual.detach(), original.detach()))
+
+
+def unchanged_output_hint(key: str, actual, original, torch) -> str:
+    if not tensor_unchanged(actual, original, torch):
+        return ""
+    return (
+        f"{key} was unchanged from its initial value. "
+        f"Write the computed value into {key} or return a tensor from solve()."
+    )
 
 
 def run_one_test(
@@ -357,6 +379,11 @@ def run_one_test(
 
     reference_case = clone_case(case, torch, device)
     candidate_case = clone_case(case, torch, device)
+    initial_output_case = {
+        key: clone_value(candidate_case[key], torch, device)
+        for key in output_keys
+        if isinstance(candidate_case.get(key), torch.Tensor)
+    }
     reference_args = args_for_case(signature, reference_case)
     candidate_args = args_for_case(signature, candidate_case)
 
@@ -399,6 +426,9 @@ def run_one_test(
         if not isinstance(expected, torch.Tensor):
             continue
         ok, message = compare_tensors(actual, expected, challenge.atol, challenge.rtol, torch)
+        hint = ""
+        if key not in overrides:
+            hint = unchanged_output_hint(key, actual, initial_output_case.get(key), torch)
         output_summaries.append(
             {
                 "name": key,
@@ -408,6 +438,8 @@ def run_one_test(
             }
         )
         if not ok:
+            if hint:
+                message = f"{message}\nHint: {hint}"
             return {
                 "name": name,
                 "status": "failed",
