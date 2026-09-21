@@ -292,6 +292,96 @@ def summarize_case(case: dict[str, Any], signature: dict[str, Any], torch) -> li
     return summaries
 
 
+def summarize_output_buffers(
+    case: dict[str, Any],
+    output_keys: list[str],
+    torch,
+    *,
+    include_preview: bool,
+) -> list[dict[str, Any]]:
+    summaries = []
+    for key in output_keys:
+        value = case.get(key)
+        if not isinstance(value, torch.Tensor):
+            continue
+        summaries.append(
+            {
+                "name": key,
+                "shape": list(value.shape),
+                "dtype": str(value.dtype).replace("torch.", ""),
+                "preview": tensor_preview(value, torch) if include_preview else "",
+            }
+        )
+    return summaries
+
+
+def output_buffer_description(case: dict[str, Any], output_keys: list[str], torch) -> str:
+    summaries = summarize_output_buffers(case, output_keys, torch, include_preview=False)
+    return ", ".join(
+        f"{item['name']} {item['dtype']} {item['shape']}" for item in summaries
+    )
+
+
+def logical_2d_shape_for_output(case: dict[str, Any], output_key: str, torch) -> tuple[int, int] | None:
+    output = case.get(output_key)
+    if not isinstance(output, torch.Tensor) or output.dim() != 1:
+        return None
+
+    input_rows = case.get("input_rows")
+    input_cols = case.get("input_cols")
+    if not isinstance(input_rows, int) or not isinstance(input_cols, int):
+        return None
+
+    candidates = [(input_rows, input_cols)]
+    kernel_rows = case.get("kernel_rows")
+    kernel_cols = case.get("kernel_cols")
+    if isinstance(kernel_rows, int) and isinstance(kernel_cols, int):
+        candidates.append((input_rows - kernel_rows + 1, input_cols - kernel_cols + 1))
+
+    for rows, cols in candidates:
+        if rows > 0 and cols > 0 and output.numel() == rows * cols:
+            return rows, cols
+    return None
+
+
+def solution_exception_hint(
+    exception: Exception,
+    case: dict[str, Any],
+    output_case: dict[str, Any],
+    output_keys: list[str],
+    torch,
+) -> str:
+    message = str(exception)
+    lower_message = message.lower()
+    hints = []
+    output_description = output_buffer_description(output_case, output_keys, torch)
+
+    shape_related = (
+        "expand(" in message
+        or "shape mismatch" in lower_message
+        or "size mismatch" in lower_message
+        or "number of sizes provided" in lower_message
+        or "must match" in lower_message
+    )
+    if shape_related and output_description:
+        hints.append(f"Expected output buffer shape: {output_description}.")
+
+    if shape_related:
+        context_case = {**case, **output_case}
+        for key in output_keys:
+            logical_shape = logical_2d_shape_for_output(context_case, key, torch)
+            if logical_shape:
+                rows, cols = logical_shape
+                hints.append(
+                    f"{key} is a flat row-major buffer for a logical {rows} x {cols} result. "
+                    f"If you computed a 2D tensor, write {key}[:] = value.reshape(-1) "
+                    f"or {key}.copy_(value.reshape_as({key}))."
+                )
+                break
+
+    return "\n".join(hints)
+
+
 def compare_tensors(actual, expected, atol: float, rtol: float, torch) -> tuple[bool, str]:
     if not isinstance(actual, torch.Tensor):
         return False, f"actual value is {type(actual).__name__}, expected a tensor"
@@ -404,12 +494,17 @@ def run_one_test(
         with torch.no_grad():
             returned = solve(*candidate_args)
             synchronize(torch, device)
-    except Exception:
+    except Exception as exc:
+        hint = solution_exception_hint(exc, candidate_case, initial_output_case, output_keys, torch)
+        message = "Solution raised an exception:\n" + traceback.format_exc(limit=8)
+        if hint:
+            message = f"{message}\nHint: {hint}"
         return {
             "name": name,
             "status": "failed",
             "durationMs": int((time.perf_counter() - start) * 1000),
-            "message": "Solution raised an exception:\n" + traceback.format_exc(limit=8),
+            "message": message,
+            "outputs": summarize_output_buffers(initial_output_case, output_keys, torch, include_preview=False),
             "case": case_summary,
         }
 

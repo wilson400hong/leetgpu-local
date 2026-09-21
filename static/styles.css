@@ -670,6 +670,59 @@ body.pane-resizing {
   background: rgba(47, 109, 246, 0.38);
 }
 
+.completion-menu {
+  position: absolute;
+  z-index: 20;
+  width: min(360px, calc(100% - 16px));
+  max-height: 238px;
+  overflow: auto;
+  border: 1px solid #34404c;
+  border-radius: 7px;
+  background: #161a1f;
+  box-shadow: 0 18px 40px rgba(0, 0, 0, 0.38);
+  padding: 5px;
+}
+
+.completion-item {
+  width: 100%;
+  min-height: 34px;
+  border: 0;
+  border-radius: 5px;
+  background: transparent;
+  color: #dce4ec;
+  display: grid;
+  grid-template-columns: minmax(0, 1fr) auto;
+  align-items: center;
+  gap: 12px;
+  padding: 6px 8px;
+  text-align: left;
+}
+
+.completion-item.active,
+.completion-item:hover {
+  background: #26313d;
+}
+
+.completion-name {
+  min-width: 0;
+  overflow: hidden;
+  text-overflow: ellipsis;
+  white-space: nowrap;
+  color: #8bd3ff;
+  font-family: "SFMono-Regular", Consolas, "Liberation Mono", monospace;
+  font-size: 13px;
+}
+
+.completion-name span {
+  color: #f8d470;
+}
+
+.completion-detail {
+  color: var(--muted-2);
+  font-size: 12px;
+  white-space: nowrap;
+}
+
 .tok-keyword {
   color: #6da7ff;
   font-weight: 700;

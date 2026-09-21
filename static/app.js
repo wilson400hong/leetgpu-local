@@ -15,6 +15,7 @@ const state = {
   running: false,
   globalSubmissions: [],
   saveTimer: null,
+  completion: null,
   device: "auto",
   consoleHeight: Math.min(
     520,
@@ -119,6 +120,73 @@ const PYTHON_BUILTINS = new Set([
   "tuple",
 ]);
 const PYTHON_MODULES = new Set(["ctypes", "math", "nn", "np", "numpy", "torch"]);
+const MAX_COMPLETION_ITEMS = 9;
+const TORCH_COMPLETIONS = [
+  ["abs", "absolute value"],
+  ["acos", "inverse cosine"],
+  ["add", "elementwise addition"],
+  ["arange", "range tensor"],
+  ["argmax", "index of maximum"],
+  ["argmin", "index of minimum"],
+  ["argsort", "sorted indices"],
+  ["bmm", "batched matrix multiply"],
+  ["cat", "concatenate tensors"],
+  ["clamp", "clamp values"],
+  ["cos", "cosine"],
+  ["cumprod", "cumulative product"],
+  ["cumsum", "cumulative sum"],
+  ["div", "elementwise division"],
+  ["dot", "vector dot product"],
+  ["empty", "uninitialized tensor"],
+  ["empty_like", "uninitialized tensor like input"],
+  ["einsum", "Einstein summation"],
+  ["eq", "elementwise equality"],
+  ["exp", "exponential"],
+  ["eye", "identity matrix"],
+  ["flatten", "flatten tensor"],
+  ["floor", "floor values"],
+  ["full", "filled tensor"],
+  ["full_like", "filled tensor like input"],
+  ["gather", "gather values"],
+  ["isclose", "elementwise closeness"],
+  ["log", "natural logarithm"],
+  ["log_softmax", "log softmax"],
+  ["logsumexp", "stable log-sum-exp"],
+  ["matmul", "matrix product"],
+  ["max", "maximum"],
+  ["mean", "mean value"],
+  ["min", "minimum"],
+  ["mm", "matrix multiply"],
+  ["mul", "elementwise multiplication"],
+  ["no_grad", "disable autograd"],
+  ["nonzero", "indices of nonzero values"],
+  ["ones", "ones tensor"],
+  ["ones_like", "ones tensor like input"],
+  ["prod", "product"],
+  ["rand", "uniform random tensor"],
+  ["randint", "integer random tensor"],
+  ["randn", "normal random tensor"],
+  ["reshape", "reshape tensor"],
+  ["roll", "roll tensor"],
+  ["round", "round values"],
+  ["rsqrt", "reciprocal square root"],
+  ["scatter", "scatter values"],
+  ["sigmoid", "sigmoid"],
+  ["sin", "sine"],
+  ["softmax", "softmax"],
+  ["sort", "sort tensor"],
+  ["sqrt", "square root"],
+  ["stack", "stack tensors"],
+  ["sum", "sum values"],
+  ["take_along_dim", "take values along dimension"],
+  ["tan", "tangent"],
+  ["tensor", "construct tensor"],
+  ["topk", "top k values"],
+  ["transpose", "swap two dimensions"],
+  ["where", "conditional select"],
+  ["zeros", "zeros tensor"],
+  ["zeros_like", "zeros tensor like input"],
+].map(([name, detail]) => ({ name, detail }));
 
 function tokenSpan(className, value) {
   return `<span class="${className}">${escapeHtml(value)}</span>`;
@@ -251,6 +319,7 @@ function consoleStatusClass(status) {
 }
 
 function route() {
+  closeCompletionMenu();
   closeNextChallengePrompt();
   const hash = window.location.hash || "#/";
   const match = hash.match(/^#\/challenge\/(.+)$/);
@@ -537,6 +606,7 @@ function renderChallenge() {
           <div class="editor-stage">
             <pre class="code-highlight" id="codeHighlight" aria-hidden="true"></pre>
             <textarea id="codeEditor" class="code-editor" spellcheck="false" wrap="off">${escapeHtml(state.code)}</textarea>
+            <div id="completionMenu" class="completion-menu" hidden></div>
           </div>
         </div>
         <div class="console-resizer" data-console-resizer role="separator" aria-label="Resize console" title="Drag to resize console">
@@ -756,27 +826,53 @@ function bindChallenge() {
   const editor = document.getElementById("codeEditor");
   const lines = document.getElementById("lineNumbers");
   const highlight = document.getElementById("codeHighlight");
+  const completionMenu = document.getElementById("completionMenu");
   bindPaneResizer();
   bindConsoleResizer();
-  if (!editor || !lines || !highlight) return;
+  if (!editor || !lines || !highlight || !completionMenu) return;
   editor.value = state.code;
   updateEditorDecorations(editor, lines, highlight);
   editor.addEventListener("input", () => {
     state.code = editor.value;
     updateEditorDecorations(editor, lines, highlight);
+    updateCompletionMenu(editor, completionMenu);
     scheduleSave();
   });
   editor.addEventListener("scroll", () => {
     syncEditorScroll(editor, lines, highlight);
+    positionCompletionMenu(editor, completionMenu);
+  });
+  editor.addEventListener("click", () => {
+    updateCompletionMenu(editor, completionMenu);
+  });
+  editor.addEventListener("keyup", (event) => {
+    if (["ArrowUp", "ArrowDown", "Enter", "Escape", "Tab"].includes(event.key)) return;
+    updateCompletionMenu(editor, completionMenu);
+  });
+  editor.addEventListener("blur", () => {
+    window.setTimeout(() => closeCompletionMenu(completionMenu), 120);
   });
   editor.addEventListener("keydown", (event) => {
+    if (isCompletionShortcut(event)) {
+      event.preventDefault();
+      updateCompletionMenu(editor, completionMenu);
+      return;
+    }
+    if (event.key === ".") {
+      window.setTimeout(() => updateCompletionMenu(editor, completionMenu), 0);
+    }
+    if (handleCompletionKeydown(event, editor, lines, highlight, completionMenu)) {
+      return;
+    }
     if (isCommentShortcut(event)) {
       event.preventDefault();
+      closeCompletionMenu(completionMenu);
       toggleLineComments(editor, lines, highlight);
       return;
     }
     if (isLineCutShortcut(event) && editor.selectionStart === editor.selectionEnd) {
       event.preventDefault();
+      closeCompletionMenu(completionMenu);
       removeCurrentLine(editor, lines, highlight);
       return;
     }
@@ -786,9 +882,11 @@ function bindChallenge() {
       const end = editor.selectionEnd;
       const spaces = "    ";
       editor.setRangeText(spaces, start, end, "end");
+      closeCompletionMenu(completionMenu);
       applyEditorChange(editor, lines, highlight);
     }
   });
+  bindCompletionMouse(editor, lines, highlight, completionMenu);
 }
 
 function isEditorModifier(event) {
@@ -806,6 +904,202 @@ function isCommentShortcut(event) {
 
 function isLineCutShortcut(event) {
   return isEditorModifier(event) && !event.altKey && !event.shiftKey && event.key.toLowerCase() === "x";
+}
+
+function isCompletionShortcut(event) {
+  return isEditorModifier(event) && !event.altKey && !event.shiftKey && event.code === "Space";
+}
+
+function currentTorchCompletionContext(editor) {
+  if (editor.selectionStart !== editor.selectionEnd) return null;
+
+  const cursor = editor.selectionStart;
+  const before = editor.value.slice(0, cursor);
+  const trigger = before.match(/(?:^|[^A-Za-z0-9_.])torch\.([A-Za-z_]*)$/);
+  if (!trigger) return null;
+
+  const typedPrefix = trigger[1] || "";
+  const triggerText = trigger[0];
+  const torchIndex = triggerText.lastIndexOf("torch.");
+  const rangeStart = cursor - triggerText.length + torchIndex + "torch.".length;
+  const suffix = editor.value.slice(cursor).match(/^[A-Za-z0-9_]*/)?.[0] || "";
+  return {
+    prefix: typedPrefix,
+    rangeStart,
+    rangeEnd: cursor + suffix.length,
+  };
+}
+
+function torchCompletionMatches(prefix) {
+  const normalized = prefix.toLowerCase();
+  const startsWith = TORCH_COMPLETIONS.filter((item) =>
+    item.name.toLowerCase().startsWith(normalized),
+  );
+  const contains =
+    normalized.length > 0
+      ? TORCH_COMPLETIONS.filter(
+          (item) =>
+            !item.name.toLowerCase().startsWith(normalized) &&
+            item.name.toLowerCase().includes(normalized),
+        )
+      : [];
+  return [...startsWith, ...contains].slice(0, MAX_COMPLETION_ITEMS);
+}
+
+function updateCompletionMenu(editor, menu, selectedIndex = 0) {
+  const context = currentTorchCompletionContext(editor);
+  if (!context) {
+    closeCompletionMenu(menu);
+    return;
+  }
+
+  const items = torchCompletionMatches(context.prefix);
+  if (!items.length) {
+    closeCompletionMenu(menu);
+    return;
+  }
+
+  state.completion = {
+    ...context,
+    items,
+    selectedIndex: boundedNumber(selectedIndex, 0, 0, items.length - 1),
+  };
+  renderCompletionMenu(menu);
+  positionCompletionMenu(editor, menu);
+}
+
+function renderCompletionMenu(menu) {
+  const completion = state.completion;
+  if (!completion?.items?.length) {
+    closeCompletionMenu(menu);
+    return;
+  }
+
+  menu.hidden = false;
+  menu.innerHTML = completion.items
+    .map((item, index) => {
+      const active = index === completion.selectedIndex ? "active" : "";
+      return `
+        <button class="completion-item ${active}" data-completion-index="${index}" type="button">
+          <span class="completion-name">torch.${completionNameHtml(item.name, completion.prefix)}</span>
+          <span class="completion-detail">${escapeHtml(item.detail)}</span>
+        </button>
+      `;
+    })
+    .join("");
+  menu.querySelector(".completion-item.active")?.scrollIntoView({ block: "nearest" });
+}
+
+function completionNameHtml(name, prefix) {
+  if (!prefix) return escapeHtml(name);
+  const lowerName = name.toLowerCase();
+  const lowerPrefix = prefix.toLowerCase();
+  const index = lowerName.indexOf(lowerPrefix);
+  if (index === -1) return escapeHtml(name);
+  return `${escapeHtml(name.slice(0, index))}<span>${escapeHtml(
+    name.slice(index, index + prefix.length),
+  )}</span>${escapeHtml(name.slice(index + prefix.length))}`;
+}
+
+function closeCompletionMenu(menu = document.getElementById("completionMenu")) {
+  state.completion = null;
+  if (!menu) return;
+  menu.hidden = true;
+  menu.innerHTML = "";
+}
+
+function handleCompletionKeydown(event, editor, lines, highlight, menu) {
+  const completion = state.completion;
+  if (!completion || menu.hidden) return false;
+  if (event.metaKey || event.ctrlKey || event.altKey) return false;
+
+  if (event.key === "Escape") {
+    event.preventDefault();
+    closeCompletionMenu(menu);
+    return true;
+  }
+  if (event.key === "ArrowDown" || event.key === "ArrowUp") {
+    event.preventDefault();
+    const direction = event.key === "ArrowDown" ? 1 : -1;
+    const nextIndex =
+      (completion.selectedIndex + direction + completion.items.length) % completion.items.length;
+    state.completion = { ...completion, selectedIndex: nextIndex };
+    renderCompletionMenu(menu);
+    positionCompletionMenu(editor, menu);
+    return true;
+  }
+  if (event.key === "Enter" || event.key === "Tab") {
+    event.preventDefault();
+    acceptCompletion(editor, lines, highlight, menu);
+    return true;
+  }
+
+  return false;
+}
+
+function bindCompletionMouse(editor, lines, highlight, menu) {
+  menu.addEventListener("mousedown", (event) => {
+    const button = event.target.closest("[data-completion-index]");
+    if (!button) return;
+    event.preventDefault();
+    const selectedIndex = Number(button.dataset.completionIndex);
+    if (Number.isFinite(selectedIndex) && state.completion) {
+      state.completion = { ...state.completion, selectedIndex };
+      acceptCompletion(editor, lines, highlight, menu);
+    }
+  });
+}
+
+function acceptCompletion(editor, lines, highlight, menu) {
+  const completion = state.completion;
+  const item = completion?.items?.[completion.selectedIndex];
+  if (!completion || !item) return;
+
+  editor.setRangeText(item.name, completion.rangeStart, completion.rangeEnd, "end");
+  applyEditorChange(editor, lines, highlight);
+  closeCompletionMenu(menu);
+  editor.focus();
+}
+
+function positionCompletionMenu(editor, menu) {
+  const completion = state.completion;
+  if (!completion || menu.hidden) return;
+
+  const style = window.getComputedStyle(editor);
+  const lineHeight = Number.parseFloat(style.lineHeight) || 21;
+  const paddingLeft = Number.parseFloat(style.paddingLeft) || 0;
+  const paddingTop = Number.parseFloat(style.paddingTop) || 0;
+  const before = editor.value.slice(0, editor.selectionStart);
+  const lineIndex = before.split("\n").length - 1;
+  const lineStart = before.lastIndexOf("\n") + 1;
+  const visualColumn = editorVisualColumn(before.slice(lineStart), Number.parseInt(style.tabSize, 10) || 4);
+  const charWidth = editorCharWidth(editor);
+  const stage = editor.parentElement;
+  const rawLeft = paddingLeft + visualColumn * charWidth - editor.scrollLeft;
+  const rawTop = paddingTop + (lineIndex + 1) * lineHeight - editor.scrollTop + 4;
+  const maxLeft = Math.max(8, (stage?.clientWidth || editor.clientWidth) - menu.offsetWidth - 8);
+  const belowFits = rawTop + menu.offsetHeight <= (stage?.clientHeight || editor.clientHeight) - 8;
+  const top = belowFits ? rawTop : paddingTop + lineIndex * lineHeight - editor.scrollTop - menu.offsetHeight - 4;
+
+  menu.style.left = `${Math.max(8, Math.min(rawLeft, maxLeft))}px`;
+  menu.style.top = `${Math.max(8, top)}px`;
+}
+
+function editorVisualColumn(text, tabSize) {
+  let column = 0;
+  for (const char of text) {
+    column += char === "\t" ? tabSize - (column % tabSize) : 1;
+  }
+  return column;
+}
+
+function editorCharWidth(editor) {
+  const style = window.getComputedStyle(editor);
+  const canvas = editorCharWidth.canvas || document.createElement("canvas");
+  editorCharWidth.canvas = canvas;
+  const context = canvas.getContext("2d");
+  context.font = `${style.fontStyle} ${style.fontVariant} ${style.fontWeight} ${style.fontSize} ${style.fontFamily}`;
+  return context.measureText("M").width || 8;
 }
 
 function applyEditorChange(editor, lines, highlight) {
