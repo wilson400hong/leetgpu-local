@@ -518,6 +518,7 @@ function renderHome() {
         <div class="status-metrics">
           <span>${totals.solved} solved</span>
           <span>${totals.tried} tried</span>
+          <span>${totals.bookmarked} starred</span>
           <span>${totals.total} challenges</span>
         </div>
       </section>
@@ -550,6 +551,7 @@ function renderChallengeList(filtered) {
         </div>
         <select class="select" data-status-select aria-label="Status filter">
           <option value="all" ${state.statusFilter === "all" ? "selected" : ""}>All Challenges</option>
+          <option value="bookmarked" ${state.statusFilter === "bookmarked" ? "selected" : ""}>Starred</option>
           <option value="solved" ${state.statusFilter === "solved" ? "selected" : ""}>Solved</option>
           <option value="tried" ${state.statusFilter === "tried" ? "selected" : ""}>Tried</option>
           <option value="untried" ${state.statusFilter === "untried" ? "selected" : ""}>Untried</option>
@@ -581,9 +583,10 @@ function totalCounts() {
       acc.total += 1;
       if (item.status === "solved") acc.solved += 1;
       if (item.status === "tried") acc.tried += 1;
+      if (item.bookmarked) acc.bookmarked += 1;
       return acc;
     },
-    { total: 0, solved: 0, tried: 0 },
+    { total: 0, solved: 0, tried: 0, bookmarked: 0 },
   );
 }
 
@@ -591,7 +594,14 @@ function filteredChallenges() {
   const query = state.search.trim().toLowerCase();
   return state.challenges.filter((item) => {
     if (state.difficulty !== "all" && item.difficulty !== state.difficulty) return false;
-    if (state.statusFilter !== "all" && item.status !== state.statusFilter) return false;
+    if (state.statusFilter === "bookmarked" && !item.bookmarked) return false;
+    if (
+      state.statusFilter !== "all" &&
+      state.statusFilter !== "bookmarked" &&
+      item.status !== state.statusFilter
+    ) {
+      return false;
+    }
     if (!query) return true;
     return (
       item.title.toLowerCase().includes(query) ||
@@ -609,15 +619,31 @@ function challengeCards(items) {
     .map(
       (item) => {
         const href = challengeHref(item.id);
+        const bookmarked = Boolean(item.bookmarked);
+        const bookmarkLabel = bookmarked
+          ? `Remove ${item.title} from starred challenges`
+          : `Star ${item.title} for redo`;
         return `
-        <a class="challenge-card" data-challenge-id="${escapeHtml(item.id)}" href="${escapeHtml(href)}">
-          <div class="card-meta">
-            <span class="difficulty ${item.difficulty}">${escapeHtml(capitalize(item.difficulty))}</span>
-            <span class="status-pill ${item.status}">${statusLabel(item.status)}</span>
-          </div>
-          <h2>${escapeHtml(item.title)}</h2>
-          <p>${escapeHtml(truncate(item.description, 145))}</p>
-        </a>
+        <article class="challenge-card-shell ${bookmarked ? "bookmarked" : ""}">
+          <a class="challenge-card" data-challenge-id="${escapeHtml(item.id)}" href="${escapeHtml(href)}">
+            <div class="card-meta">
+              <span class="difficulty ${item.difficulty}">${escapeHtml(capitalize(item.difficulty))}</span>
+              <span class="status-pill ${item.status}">${statusLabel(item.status)}</span>
+            </div>
+            <h2>${escapeHtml(item.title)}</h2>
+            <p>${escapeHtml(truncate(item.description, 145))}</p>
+          </a>
+          <button
+            class="bookmark-button ${bookmarked ? "active" : ""}"
+            data-bookmark-id="${escapeHtml(item.id)}"
+            type="button"
+            aria-label="${escapeHtml(bookmarkLabel)}"
+            aria-pressed="${bookmarked ? "true" : "false"}"
+            title="${escapeHtml(bookmarked ? "Starred for redo" : "Star for redo")}"
+          >
+            <span aria-hidden="true">${bookmarked ? "★" : "☆"}</span>
+          </button>
+        </article>
       `;
       },
     )
@@ -880,9 +906,11 @@ function bindHome() {
       const grid = document.getElementById("challengeGrid");
       if (grid) grid.innerHTML = challengeCards(filteredChallenges());
       bindChallengeCards();
+      bindBookmarkButtons();
     });
   }
   bindChallengeCards();
+  bindBookmarkButtons();
 }
 
 function bindChallengeCards() {
@@ -894,6 +922,53 @@ function bindChallengeCards() {
       }
     });
   });
+}
+
+function bindBookmarkButtons() {
+  document.querySelectorAll("[data-bookmark-id]").forEach((button) => {
+    button.addEventListener("click", () => {
+      toggleBookmark(button);
+    });
+  });
+}
+
+function updateChallengeBookmark(challengeId, bookmarked, replacement = null) {
+  state.challenges = state.challenges.map((item) => {
+    if (item.id !== challengeId) return item;
+    return replacement ? { ...item, ...replacement } : { ...item, bookmarked };
+  });
+  if (state.current?.id === challengeId) {
+    state.current = replacement
+      ? { ...state.current, ...replacement }
+      : { ...state.current, bookmarked };
+  }
+}
+
+async function toggleBookmark(button) {
+  const challengeId = button.dataset.bookmarkId;
+  const item = state.challenges.find((challenge) => challenge.id === challengeId);
+  if (!item) return;
+
+  const previous = Boolean(item.bookmarked);
+  const next = !previous;
+  button.disabled = true;
+  updateChallengeBookmark(challengeId, next);
+  renderHome();
+
+  try {
+    const payload = await api("/api/bookmark", {
+      method: "POST",
+      body: JSON.stringify({ challengeId, bookmarked: next }),
+    });
+    if (payload.challenge) {
+      updateChallengeBookmark(challengeId, Boolean(payload.challenge.bookmarked), payload.challenge);
+      renderHome();
+    }
+  } catch (error) {
+    updateChallengeBookmark(challengeId, previous);
+    renderHome();
+    window.alert(error.message || "Failed to update bookmark");
+  }
 }
 
 function bindChallenge() {

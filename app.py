@@ -161,10 +161,16 @@ def init_db() -> None:
                 solved_at TEXT,
                 last_attempt_at TEXT,
                 last_code TEXT,
+                bookmarked INTEGER NOT NULL DEFAULT 0,
                 updated_at TEXT NOT NULL
             )
             """
         )
+        progress_columns = {row[1] for row in conn.execute("PRAGMA table_info(progress)")}
+        if "bookmarked" not in progress_columns:
+            conn.execute(
+                "ALTER TABLE progress ADD COLUMN bookmarked INTEGER NOT NULL DEFAULT 0"
+            )
         conn.execute(
             """
             CREATE TABLE IF NOT EXISTS submissions (
@@ -220,6 +226,20 @@ def save_code(challenge_id: str, code: str) -> None:
             updated_at = excluded.updated_at
         """,
         (challenge_id, code, now),
+    )
+
+
+def set_bookmark(challenge_id: str, bookmarked: bool) -> None:
+    now = utc_now()
+    db_execute(
+        """
+        INSERT INTO progress (challenge_id, status, attempts, bookmarked, updated_at)
+        VALUES (?, 'untried', 0, ?, ?)
+        ON CONFLICT(challenge_id) DO UPDATE SET
+            bookmarked = excluded.bookmarked,
+            updated_at = excluded.updated_at
+        """,
+        (challenge_id, 1 if bookmarked else 0, now),
     )
 
 
@@ -393,6 +413,7 @@ def challenge_to_json(challenge: ChallengeInfo, progress: dict[str, Any] | None 
         "numGpus": challenge.num_gpus,
         "status": (progress or {}).get("status", "untried"),
         "attempts": (progress or {}).get("attempts", 0),
+        "bookmarked": bool((progress or {}).get("bookmarked", 0)),
         "solvedAt": (progress or {}).get("solved_at"),
         "lastAttemptAt": (progress or {}).get("last_attempt_at"),
     }
@@ -682,6 +703,9 @@ class LeetGPUHandler(BaseHTTPRequestHandler):
                 save_code(challenge_id, code)
                 self.send_json({"ok": True})
                 return
+            if parsed.path == "/api/bookmark":
+                self.handle_bookmark(body)
+                return
             if parsed.path == "/api/judge":
                 self.handle_judge(body)
                 return
@@ -698,12 +722,14 @@ class LeetGPUHandler(BaseHTTPRequestHandler):
         counts: dict[str, dict[str, int]] = {}
         for item in items:
             difficulty = item["difficulty"]
-            counts.setdefault(difficulty, {"total": 0, "solved": 0, "tried": 0})
+            counts.setdefault(difficulty, {"total": 0, "solved": 0, "tried": 0, "bookmarked": 0})
             counts[difficulty]["total"] += 1
             if item["status"] == "solved":
                 counts[difficulty]["solved"] += 1
             elif item["status"] == "tried":
                 counts[difficulty]["tried"] += 1
+            if item["bookmarked"]:
+                counts[difficulty]["bookmarked"] += 1
         self.send_json({"challenges": items, "counts": counts})
 
     def handle_challenge_detail(self, challenge_id: str) -> None:
@@ -712,6 +738,16 @@ class LeetGPUHandler(BaseHTTPRequestHandler):
             self.not_found("Unknown challenge")
             return
         self.send_json(detail)
+
+    def handle_bookmark(self, body: dict[str, Any]) -> None:
+        challenge_id = str(body.get("challengeId") or "")
+        challenge = find_challenge(challenge_id)
+        if challenge is None:
+            self.not_found("Unknown challenge")
+            return
+        set_bookmark(challenge_id, bool(body.get("bookmarked")))
+        progress = get_progress_map().get(challenge_id)
+        self.send_json({"ok": True, "challenge": challenge_to_json(challenge, progress)})
 
     def handle_judge(self, body: dict[str, Any]) -> None:
         challenge_id = str(body.get("challengeId") or "")

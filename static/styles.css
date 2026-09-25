@@ -336,10 +336,16 @@ button:disabled {
   gap: 22px;
 }
 
+.challenge-card-shell {
+  position: relative;
+  min-width: 0;
+}
+
 .challenge-card {
   display: block;
   min-height: 150px;
-  padding: 20px;
+  height: 100%;
+  padding: 20px 56px 20px 20px;
   border-radius: 7px;
   border: 1px solid var(--line-soft);
   background: var(--panel);
@@ -357,6 +363,59 @@ button:disabled {
   border-color: rgba(46, 230, 223, 0.42);
   background: #202326;
   transform: translateY(-1px);
+}
+
+.challenge-card-shell.bookmarked .challenge-card {
+  border-color: rgba(245, 158, 11, 0.34);
+}
+
+.challenge-card-shell.bookmarked .challenge-card:hover,
+.challenge-card-shell.bookmarked .challenge-card:focus {
+  border-color: rgba(245, 158, 11, 0.62);
+}
+
+.bookmark-button {
+  position: absolute;
+  top: 14px;
+  right: 14px;
+  z-index: 3;
+  width: 34px;
+  height: 34px;
+  border: 1px solid #313943;
+  border-radius: 6px;
+  display: grid;
+  place-items: center;
+  background: #171b20;
+  color: #7f8b98;
+  font-size: 18px;
+  line-height: 1;
+  outline: 0;
+  transition:
+    border-color 140ms ease,
+    background 140ms ease,
+    color 140ms ease,
+    transform 140ms ease;
+}
+
+.bookmark-button:hover,
+.bookmark-button:focus {
+  border-color: rgba(245, 158, 11, 0.55);
+  background: #22201b;
+  color: #ffbe55;
+}
+
+.bookmark-button.active {
+  border-color: rgba(245, 158, 11, 0.56);
+  background: var(--amber-soft);
+  color: #ffbe55;
+}
+
+.bookmark-button:active {
+  transform: translateY(1px);
+}
+
+.bookmark-button:disabled {
+  opacity: 0.7;
 }
 
 .card-meta {

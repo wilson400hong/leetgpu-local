@@ -466,6 +466,36 @@ def unchanged_output_hint(key: str, actual, original, torch) -> str:
     )
 
 
+def comparison_failure_hint(challenge: Any, key: str, case: dict[str, Any]) -> str:
+    challenge_name = str(getattr(challenge, "name", "")).lower()
+    if challenge_name == "logistic regression" and key == "beta":
+        samples = case.get("n_samples")
+        features = case.get("n_features")
+        separable_note = ""
+        if isinstance(samples, int) and isinstance(features, int) and samples == features:
+            separable_note = (
+                " The square test cases can be separable, so unregularized IRLS may keep "
+                "moving along a separating direction and produce a different large beta."
+            )
+        return (
+            "This challenge compares beta against its reference Newton/IRLS solver, not only "
+            "against the predicted labels. Match the reference details: l2_reg = 1e-6, "
+            "W = clamp(p * (1 - p), min=1e-8), gradient = X.T @ (p - y) + l2_reg * beta, "
+            "H = X.T @ (X * W[:, None]) + l2_reg * I, and beta -= solve(H, gradient). "
+            "If using next_beta, check torch.norm(next_beta - beta) before copying next_beta into beta; "
+            "otherwise the loop exits after one iteration."
+            f"{separable_note}"
+        )
+    if challenge_name == "batch normalization" and key == "output":
+        return (
+            "Batch Normalization normalizes each feature/channel across the batch: "
+            "mean = input.mean(dim=0) and variance = input.var(dim=0, unbiased=False). "
+            "Using dim=1 computes per-sample normalization, and torch.var defaults to "
+            "unbiased=True unless you pass unbiased=False."
+        )
+    return ""
+
+
 def run_one_test(
     *,
     name: str,
@@ -544,9 +574,14 @@ def run_one_test(
         if not isinstance(expected, torch.Tensor):
             continue
         ok, message = compare_tensors(actual, expected, challenge.atol, challenge.rtol, torch)
-        hint = ""
+        hints = []
         if key not in overrides:
             hint = unchanged_output_hint(key, actual, initial_output_case.get(key), torch)
+            if hint:
+                hints.append(hint)
+        hint = comparison_failure_hint(challenge, key, candidate_case)
+        if hint:
+            hints.append(hint)
         output_summaries.append(
             {
                 "name": key,
@@ -556,8 +591,8 @@ def run_one_test(
             }
         )
         if not ok:
-            if hint:
-                message = f"{message}\nHint: {hint}"
+            if hints:
+                message = f"{message}\nHint: {' '.join(hints)}"
             return {
                 "name": name,
                 "status": "failed",
