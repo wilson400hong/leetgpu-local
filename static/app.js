@@ -803,8 +803,10 @@ function consoleHtml() {
     );
   }
   const summary = result.summary || {};
+  const failedCount = summary.failed || 0;
+  const skippedCount = summary.skipped || 0;
   lines.push(
-    `${consoleLine("console-muted", "Tests:")} ${consoleLine("console-success", `${summary.passed || 0} passed`)}, ${consoleLine("console-failed", `${summary.failed || 0} failed`)}, ${consoleLine("console-warning", `${summary.skipped || 0} skipped`)} ${consoleLine("console-muted", `in ${result.durationMs || 0} ms`)}`,
+    `${consoleLine("console-muted", "Tests:")} ${consoleLine("console-success", `${summary.passed || 0} passed`)}, ${consoleLine(failedCount > 0 ? "console-failed" : "console-muted", `${failedCount} failed`)}, ${consoleLine(skippedCount > 0 ? "console-warning" : "console-muted", `${skippedCount} skipped`)} ${consoleLine("console-muted", `in ${result.durationMs || 0} ms`)}`,
   );
   (result.tests || []).forEach((test) => {
     lines.push("");
